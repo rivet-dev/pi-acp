@@ -707,6 +707,33 @@ test('PiAcpSession: ignores agent_settled emitted before the pending turn starts
   assert.equal(await p, 'end_turn')
 })
 
+test('PiAcpSession: surfaces the underlying Pi model error at settlement', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const p = session.prompt('hello')
+  proc.emit({ type: 'agent_start' })
+  proc.emit({
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      stopReason: 'error',
+      errorMessage: 'write tool failed: bridge unavailable'
+    }
+  })
+  proc.emit({ type: 'agent_settled' })
+  await assert.rejects(p, /Internal error: write tool failed: bridge unavailable/)
+})
+
 test('PiAcpSession: does not re-emit startup info on first prompt after it was already sent', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

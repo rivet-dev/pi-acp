@@ -262,6 +262,7 @@ export class PiAcpSession {
 
   // Current in-flight turn (if any). Additional prompts are queued.
   private pendingTurn: PendingTurn | null = null
+  private pendingTurnError: string | null = null
   private readonly turnQueue: QueuedTurn[] = []
   private closed = false
   // Track tool call statuses and ensure they are monotonic (pending -> in_progress -> completed).
@@ -493,6 +494,7 @@ export class PiAcpSession {
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
     this.inAgentLoop = false
+    this.pendingTurnError = null
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -629,6 +631,14 @@ export class PiAcpSession {
         }
 
         // Ignore other delta/event types for now.
+        break
+      }
+
+      case 'message_end': {
+        const message = (ev as any).message
+        if (message?.role === 'assistant' && message?.stopReason === 'error') {
+          this.pendingTurnError = String(message.errorMessage ?? 'Pi model turn failed')
+        }
         break
       }
 
@@ -862,7 +872,13 @@ export class PiAcpSession {
         // the ACP `session/prompt` request.
         void this.flushEmits().finally(() => {
           const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
-          this.pendingTurn?.resolve(reason)
+          const turnError = this.pendingTurnError
+          this.pendingTurnError = null
+          if (turnError && !this.cancelRequested) {
+            this.pendingTurn?.reject(RequestError.internalError({}, turnError))
+          } else {
+            this.pendingTurn?.resolve(reason)
+          }
           this.pendingTurn = null
           this.inAgentLoop = false
 
