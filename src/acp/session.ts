@@ -270,7 +270,8 @@ export class PiAcpSession {
   private currentToolCalls = new Map<string, 'pending' | 'in_progress'>()
 
   // pi can emit multiple `turn_end` events for a single user prompt (e.g. after tool_use).
-  // The overall agent loop completes when `agent_end` is emitted.
+  // The overall agent loop completes when Pi emits `agent_end` (older
+  // releases) or `agent_settled` (current releases).
   private inAgentLoop = false
 
   // For ACP diff support: capture file contents before edit/write mutations,
@@ -503,9 +504,9 @@ export class PiAcpSession {
 
     // Kick off pi, but completion is determined by pi events, not the RPC response.
     // Important: pi may emit multiple `turn_end` events (e.g. when the model requests tools).
-    // The full prompt is finished when we see `agent_end`.
+    // The full prompt is finished when we see Pi's terminal agent event.
     this.proc.prompt(t.message, t.images).catch(err => {
-      // If the subprocess errors before we get an `agent_end`, treat as error unless cancelled.
+      // If the subprocess errors before we get a terminal agent event, treat as error unless cancelled.
       // Also ensure we flush any already-enqueued updates first.
       void this.flushEmits().finally(() => {
         // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
@@ -850,7 +851,8 @@ export class PiAcpSession {
         break
       }
 
-      case 'agent_end': {
+      case 'agent_end':
+      case 'agent_settled': {
         // Ensure all updates derived from pi events are delivered before we resolve
         // the ACP `session/prompt` request.
         void this.flushEmits().finally(() => {
