@@ -233,7 +233,6 @@ export class PiRpcProcess {
       }
     } catch (error) {
       const detail = proc.stderrText.trim()
-      proc.dispose()
       throw new PiRpcSpawnError(`Pi RPC handshake failed${detail ? `: ${detail}` : '.'}`, { cause: error })
     }
 
