@@ -853,6 +853,11 @@ export class PiAcpSession {
 
       case 'agent_end':
       case 'agent_settled': {
+        // Pi can emit a startup/rebind `agent_settled` after ACP has queued a
+        // prompt but before that prompt's `agent_start`. It does not belong to
+        // the pending turn and must not complete it.
+        if (type === 'agent_settled' && !this.inAgentLoop) break
+
         // Ensure all updates derived from pi events are delivered before we resolve
         // the ACP `session/prompt` request.
         void this.flushEmits().finally(() => {
