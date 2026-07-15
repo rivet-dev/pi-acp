@@ -91,6 +91,7 @@ export class PiRpcProcess {
   private readonly pending = new Map<string, { resolve: (v: PiRpcResponse) => void; reject: (e: unknown) => void }>()
   private eventHandlers: Array<(ev: PiRpcEvent) => void> = []
   private readonly preludeLines: string[] = []
+  private stderrText = ''
 
   private constructor(child: ChildProcessWithoutNullStreams, cleanupLaunchResources: () => void) {
     this.child = child
@@ -100,6 +101,10 @@ export class PiRpcProcess {
     })
 
     const rl = readline.createInterface({ input: child.stdout })
+    child.stderr.on('data', chunk => {
+      if (this.stderrText.length >= 16_384) return
+      this.stderrText += String(chunk).slice(0, 16_384 - this.stderrText.length)
+    })
     rl.on('line', line => {
       if (!line.trim()) return
       let msg: any
@@ -212,10 +217,6 @@ export class PiRpcProcess {
       throw new PiRpcSpawnError(`Could not start pi (command: ${cmd}).`, { code, cause: e })
     }
 
-    child.stderr.on('data', () => {
-      // leave stderr untouched; ACP clients may capture it.
-    })
-
     const proc = new PiRpcProcess(child, cleanupLaunchResources)
 
     // Best-effort handshake.
@@ -230,8 +231,10 @@ export class PiRpcProcess {
         const { dirname } = await import('node:path')
         mkdirSync(dirname(sessionFile), { recursive: true })
       }
-    } catch {
-      // ignore for now
+    } catch (error) {
+      const detail = proc.stderrText.trim()
+      proc.dispose()
+      throw new PiRpcSpawnError(`Pi RPC handshake failed${detail ? `: ${detail}` : '.'}`, { cause: error })
     }
 
     if (params.signal?.aborted) {
