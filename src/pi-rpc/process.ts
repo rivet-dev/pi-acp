@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as readline from 'node:readline'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
 import { prepareMcpLaunch } from '../acp/mcp.js'
+import { preparePermissionGateLaunch } from '../acp/permissions.js'
 import type { McpServer } from '@agentclientprotocol/sdk'
 
 export class PiRpcSpawnError extends Error {
@@ -152,7 +153,12 @@ export class PiRpcProcess {
     // Keep extensions + prompt templates enabled because ACP users may rely on them
     // (e.g. MCP extensions, prompt templates for workflows).
     const mcpLaunch = prepareMcpLaunch(params.mcpServers)
-    const args = ['--mode', 'rpc', '--no-themes', ...(mcpLaunch?.args ?? [])]
+    const permissionGateLaunch = preparePermissionGateLaunch()
+    const cleanupLaunchResources = () => {
+      mcpLaunch?.cleanup()
+      permissionGateLaunch?.cleanup()
+    }
+    const args = ['--mode', 'rpc', '--no-themes', ...(mcpLaunch?.args ?? []), ...(permissionGateLaunch?.args ?? [])]
     if (params.sessionPath) args.push('--session', params.sessionPath)
 
     const child = spawn(cmd, args, {
@@ -184,7 +190,7 @@ export class PiRpcProcess {
         child.once('error', onError)
       })
     } catch (e: any) {
-      mcpLaunch?.cleanup()
+      cleanupLaunchResources()
       const code = typeof e?.code === 'string' ? e.code : undefined
       if (e?.name === 'AbortError' || params.signal?.aborted) {
         throw new PiRpcSpawnError(`Starting pi was cancelled (command: ${cmd}).`, {
@@ -210,7 +216,7 @@ export class PiRpcProcess {
       // leave stderr untouched; ACP clients may capture it.
     })
 
-    const proc = new PiRpcProcess(child, () => mcpLaunch?.cleanup())
+    const proc = new PiRpcProcess(child, cleanupLaunchResources)
 
     // Best-effort handshake.
     // Important: pi may emit a get_state response pointing at a sessionFile in a directory
