@@ -1,6 +1,6 @@
-import { readdirSync, readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { join, resolve, isAbsolute } from 'node:path'
+import { getAgentDir, getConfiguredSessionDir } from './pi-settings.js'
 
 export type PiSessionListItem = {
   sessionId: string
@@ -13,32 +13,10 @@ export type PiSessionListItem = {
 const DEFAULT_TAIL_BYTES = 256 * 1024
 const DEFAULT_HEAD_BYTES = 64 * 1024
 
-function getPiAgentDir(): string {
-  // pi supports overriding config dir via PI_CODING_AGENT_DIR.
-  // See pi README.
-  return process.env.PI_CODING_AGENT_DIR ? resolve(process.env.PI_CODING_AGENT_DIR) : join(homedir(), '.pi', 'agent')
-}
-
-function readSessionDirFromSettings(agentDir: string): string | null {
-  const settingsPath = join(agentDir, 'settings.json')
-  try {
-    if (!existsSync(settingsPath)) return null
-    const raw = readFileSync(settingsPath, 'utf8')
-    const data = JSON.parse(raw) as unknown
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return null
-
-    const sessionDir = (data as Record<string, unknown>).sessionDir
-    if (typeof sessionDir !== 'string' || !sessionDir.trim()) return null
-
-    return isAbsolute(sessionDir) ? sessionDir : resolve(agentDir, sessionDir)
-  } catch {
-    return null
-  }
-}
-
-export function getPiSessionsDir(): string {
-  const agentDir = getPiAgentDir()
-  return readSessionDirFromSettings(agentDir) ?? join(agentDir, 'sessions')
+export function getPiSessionsDir(cwd = process.cwd()): string {
+  const configured = getConfiguredSessionDir(cwd)
+  if (configured) return isAbsolute(configured) ? configured : resolve(cwd, configured)
+  return join(getAgentDir(), 'sessions')
 }
 
 function walkJsonlFiles(dir: string, out: string[]) {
@@ -60,8 +38,9 @@ function walkJsonlFiles(dir: string, out: string[]) {
 
 function readFirstLine(path: string): string | null {
   // Avoid reading the whole file.
-  const fd = openSync(path, 'r')
+  let fd: number | null = null
   try {
+    fd = openSync(path, 'r')
     const buf = Buffer.alloc(DEFAULT_HEAD_BYTES)
     const n = readSync(fd, buf, 0, buf.length, 0)
     if (n <= 0) return null
@@ -71,10 +50,12 @@ function readFirstLine(path: string): string | null {
   } catch {
     return null
   } finally {
-    try {
-      closeSync(fd)
-    } catch {
-      // ignore
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        // ignore
+      }
     }
   }
 }
@@ -109,6 +90,11 @@ function parseSessionHeader(firstLine: string): { sessionId: string; cwd: string
   } catch {
     return null
   }
+}
+
+export function readPiSessionHeader(path: string): { sessionId: string; cwd: string } | null {
+  const first = readFirstLine(path)
+  return first ? parseSessionHeader(first) : null
 }
 
 function pickTitleFromTail(tail: string): string | null {
@@ -262,17 +248,15 @@ function pickFallbackTitleFromHead(path: string): string | null {
   return null
 }
 
-export function listPiSessions(): PiSessionListItem[] {
-  const sessionsDir = getPiSessionsDir()
+export function listPiSessions(cwd = process.cwd()): PiSessionListItem[] {
+  const sessionsDir = getPiSessionsDir(cwd)
   const files: string[] = []
   walkJsonlFiles(sessionsDir, files)
 
   const items: PiSessionListItem[] = []
 
   for (const file of files) {
-    const first = readFirstLine(file)
-    if (!first) continue
-    const header = parseSessionHeader(first)
+    const header = readPiSessionHeader(file)
     if (!header) continue
 
     let updatedAt: string | null = null
@@ -323,11 +307,11 @@ export function listPiSessions(): PiSessionListItem[] {
   return items
 }
 
-export function findPiSession(sessionId: string): PiSessionListItem | null {
-  const all = listPiSessions()
+export function findPiSession(sessionId: string, cwd = process.cwd()): PiSessionListItem | null {
+  const all = listPiSessions(cwd)
   return all.find(s => s.sessionId === sessionId) ?? null
 }
 
-export function findPiSessionFile(sessionId: string): string | null {
-  return findPiSession(sessionId)?.sessionFile ?? null
+export function findPiSessionFile(sessionId: string, cwd = process.cwd()): string | null {
+  return findPiSession(sessionId, cwd)?.sessionFile ?? null
 }

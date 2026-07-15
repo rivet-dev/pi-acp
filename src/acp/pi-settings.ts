@@ -73,3 +73,19 @@ export function getQuietStartup(cwd: string): boolean {
 
   return false
 }
+
+/**
+ * Mirror pi's merged sessionDir setting. The caller must resolve relative paths
+ * against the pi process cwd; pi intentionally leaves them relative here.
+ */
+export function getConfiguredSessionDir(cwd: string): string | undefined {
+  const sessionDir = getMergedSettings(cwd).sessionDir
+  if (typeof sessionDir !== 'string' || !sessionDir) return undefined
+
+  const value = sessionDir
+  if (value === '~') return homedir()
+  if (value.startsWith('~/') || (process.platform === 'win32' && value.startsWith('~\\'))) {
+    return join(homedir(), value.slice(2))
+  }
+  return value
+}

@@ -12,13 +12,21 @@ class FakeStore {
   upsert() {}
 }
 
-test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update', async () => {
+test('PiAcpAgent: loadSession replays assistant blocks and updates their tool calls', async () => {
   const originalSpawn = PiRpcProcess.spawn
   ;(PiRpcProcess as any).spawn = async () => {
     return {
       onEvent: () => () => {},
       getMessages: async () => ({
         messages: [
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'checking the shell' },
+              { type: 'text', text: 'Running it.' },
+              { type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'echo hello' } }
+            ]
+          },
           {
             role: 'toolResult',
             toolCallId: 'call_1',
@@ -43,24 +51,39 @@ test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update
 
     const updates = conn.updates.map(u => (u as any).update)
 
+    assert.equal(updates.filter(u => u?.sessionUpdate === 'tool_call').length, 1)
+    assert.equal(updates[0]?.sessionUpdate, 'agent_thought_chunk')
+    assert.deepEqual(updates[0]?.content, { type: 'text', text: 'checking the shell' })
+    assert.equal(updates[1]?.sessionUpdate, 'agent_message_chunk')
+    assert.deepEqual(updates[1]?.content, { type: 'text', text: 'Running it.' })
+
     const toolCall = updates.find(u => u?.sessionUpdate === 'tool_call')
     assert.ok(toolCall)
     assert.equal(toolCall.toolCallId, 'call_1')
     assert.equal(toolCall.title, 'echo hello')
     assert.equal(toolCall.kind, 'execute')
-    assert.deepEqual(toolCall.content, [{ type: 'terminal', terminalId: 'call_1' }])
-    assert.deepEqual(toolCall._meta, { terminal_info: { terminal_id: 'call_1', cwd: '/tmp/project' } })
+    assert.equal(toolCall.content, undefined)
+    assert.equal(toolCall._meta, undefined)
+    assert.deepEqual(toolCall.rawInput, { command: 'echo hello' })
     assert.equal(toolCall.rawOutput, undefined)
 
     const toolCallUpdate = updates.find(u => u?.sessionUpdate === 'tool_call_update')
     assert.ok(toolCallUpdate)
     assert.equal(toolCallUpdate.toolCallId, 'call_1')
     assert.equal(toolCallUpdate.status, 'completed')
-    assert.deepEqual(toolCallUpdate._meta, {
-      terminal_output: { terminal_id: 'call_1', data: 'hello from bash' },
-      terminal_exit: { terminal_id: 'call_1', exit_code: 0, signal: null }
+    assert.deepEqual(toolCallUpdate.content, [{ type: 'content', content: { type: 'text', text: 'hello from bash' } }])
+    assert.equal(toolCallUpdate._meta, undefined)
+    assert.deepEqual(toolCallUpdate.rawOutput, {
+      result: {
+        role: 'toolResult',
+        toolCallId: 'call_1',
+        toolName: 'bash',
+        args: { command: 'echo hello' },
+        content: [{ type: 'text', text: 'hello from bash' }],
+        isError: false
+      },
+      exitCode: 0
     })
-    assert.equal(toolCallUpdate.rawOutput, undefined)
   } finally {
     PiRpcProcess.spawn = originalSpawn
   }

@@ -15,17 +15,7 @@ import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/proces
 import { maybeAuthRequiredError } from './auth-required.js'
 import { SessionStore } from './session-store.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
-import {
-  bashCommand,
-  bashExitCode,
-  bashOutputDelta,
-  bashResultText,
-  bashTerminalContent,
-  bashTerminalExitMeta,
-  bashTerminalInfoMeta,
-  bashTerminalOutputMeta,
-  isBashTool
-} from './translate/bash.js'
+import { bashCommand, bashExitCode, bashOutputDelta, bashResultText, isBashTool } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
 
 type SessionCreateParams = {
@@ -36,7 +26,7 @@ type SessionCreateParams = {
   piCommand?: string
 }
 
-export type StopReason = 'end_turn' | 'cancelled' | 'error'
+export type StopReason = 'end_turn' | 'cancelled'
 
 type PendingTurn = {
   resolve: (reason: StopReason) => void
@@ -153,7 +143,7 @@ export class SessionManager {
 
   /** Dispose all sessions and their underlying pi subprocesses. */
   disposeAll(): void {
-    for (const [id] of this.sessions) this.close(id)
+    for (const [id] of this.sessions) void this.close(id)
   }
 
   /** Get a registered session if it exists (no throw). */
@@ -165,23 +155,21 @@ export class SessionManager {
    * Dispose a session's underlying pi process and remove it from the manager.
    * Used when clients explicitly reload a session and we want a fresh pi subprocess.
    */
-  close(sessionId: string): void {
+  async close(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s) return
-    try {
-      s.proc.dispose?.()
-    } catch {
-      // ignore
-    }
     this.sessions.delete(sessionId)
+    await s.close()
   }
 
   /** Close all sessions except the one with `keepSessionId`. */
-  closeAllExcept(keepSessionId: string): void {
+  async closeAllExcept(keepSessionId: string): Promise<void> {
+    const closes: Promise<void>[] = []
     for (const [id] of this.sessions) {
       if (id === keepSessionId) continue
-      this.close(id)
+      closes.push(this.close(id))
     }
+    await Promise.all(closes)
   }
 
   async create(params: SessionCreateParams): Promise<PiAcpSession> {
@@ -191,6 +179,7 @@ export class SessionManager {
     try {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
+        mcpServers: params.mcpServers,
         piCommand: params.piCommand
       })
     } catch (e) {
@@ -229,7 +218,7 @@ export class SessionManager {
 
   get(sessionId: string): PiAcpSession {
     const s = this.sessions.get(sessionId)
-    if (!s) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
+    if (!s) throw RequestError.invalidParams({}, `Unknown sessionId: ${sessionId}`)
     return s
   }
 
@@ -274,6 +263,7 @@ export class PiAcpSession {
   // Current in-flight turn (if any). Additional prompts are queued.
   private pendingTurn: PendingTurn | null = null
   private readonly turnQueue: QueuedTurn[] = []
+  private closed = false
   // Track tool call statuses and ensure they are monotonic (pending -> in_progress -> completed).
   // Some pi events can arrive out of order (e.g. late toolcall_* deltas after execution starts),
   // and clients may hide progress if we ever downgrade back to `pending`.
@@ -334,6 +324,10 @@ export class PiAcpSession {
   }
 
   async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
+    if (this.closed) {
+      throw RequestError.invalidParams({}, `Session is closed: ${this.sessionId}`)
+    }
+
     // pi RPC mode disables slash command expansion, so we do it here.
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
 
@@ -393,6 +387,29 @@ export class PiAcpSession {
     await this.proc.abort()
   }
 
+  /** Cancel all work, settle pending prompts, and release only the live process. */
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+
+    // Abort and outstanding client notifications are best-effort. Neither may
+    // hold session/close open if the subprocess or client connection is wedged.
+    void this.cancel().catch(() => {})
+    void this.flushEmits()
+
+    this.pendingTurn?.resolve('cancelled')
+    this.pendingTurn = null
+    this.turnQueue.splice(0, this.turnQueue.length).forEach(turn => turn.resolve('cancelled'))
+    this.inAgentLoop = false
+
+    try {
+      if (typeof (this.proc as any).disposeAndWait === 'function') await (this.proc as any).disposeAndWait()
+      else this.proc.dispose?.()
+    } catch {
+      // The persisted Pi transcript is intentionally left untouched.
+    }
+  }
+
   wasCancelRequested(): boolean {
     return this.cancelRequested
   }
@@ -423,7 +440,7 @@ export class PiAcpSession {
     args: unknown
     status: 'pending' | 'in_progress'
     locations?: ToolCallLocation[]
-    includeTerminal: boolean
+    includeInput: boolean
   }): void {
     this.bashToolCallIds.add(params.toolCallId)
     this.emit({
@@ -433,8 +450,7 @@ export class PiAcpSession {
       kind: 'execute',
       status: params.status,
       locations: params.locations,
-      ...(params.includeTerminal ? { content: bashTerminalContent(params.toolCallId) } : {}),
-      ...(params.includeTerminal ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) } : {})
+      ...(params.includeInput ? { rawInput: params.args } : {})
     })
   }
 
@@ -453,10 +469,13 @@ export class PiAcpSession {
       sessionUpdate: 'tool_call_update',
       toolCallId: params.toolCallId,
       status: params.status,
-      _meta: {
-        ...(delta ? bashTerminalOutputMeta(params.toolCallId, delta) : {}),
+      content: delta
+        ? ([{ type: 'content', content: { type: 'text', text: delta } }] satisfies ToolCallContent[])
+        : undefined,
+      rawOutput: {
+        result: params.result,
         ...(params.status === 'completed' || params.status === 'failed'
-          ? bashTerminalExitMeta(params.toolCallId, bashExitCode(params.result, Boolean(params.isError)))
+          ? { exitCode: bashExitCode(params.result, Boolean(params.isError)) }
           : {})
       }
     })
@@ -493,9 +512,12 @@ export class PiAcpSession {
         const authErr = maybeAuthRequiredError(err)
         if (authErr) {
           this.pendingTurn?.reject(authErr)
+        } else if (this.cancelRequested) {
+          this.pendingTurn?.resolve('cancelled')
         } else {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
-          this.pendingTurn?.resolve(reason)
+          this.pendingTurn?.reject(
+            RequestError.internalError({}, String((err as Error)?.message ?? err ?? 'Pi prompt failed'))
+          )
         }
 
         this.pendingTurn = null
@@ -576,7 +598,7 @@ export class PiAcpSession {
                 args: rawInput,
                 status,
                 locations,
-                includeTerminal: !existingStatus
+                includeInput: !existingStatus
               })
             } else if (!existingStatus) {
               this.currentToolCalls.set(toolCallId, 'pending')
@@ -626,7 +648,7 @@ export class PiAcpSession {
             args,
             status: 'in_progress',
             locations,
-            includeTerminal: !existingStatus
+            includeInput: !existingStatus
           })
           break
         }

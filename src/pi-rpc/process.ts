@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as readline from 'node:readline'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
+import { prepareMcpLaunch } from '../acp/mcp.js'
+import type { McpServer } from '@agentclientprotocol/sdk'
 
 export class PiRpcSpawnError extends Error {
   /** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -74,16 +76,27 @@ type SpawnParams = {
   piCommand?: string
   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
+  /** ACP-provided MCP servers to expose through Pi's extension system. */
+  mcpServers?: McpServer[]
+  /** Cancels startup when the owning ACP lifecycle operation is closed. */
+  signal?: AbortSignal
 }
 
 export class PiRpcProcess {
   private readonly child: ChildProcessWithoutNullStreams
+  private readonly cleanupLaunchResources: () => void
+  private readonly exited: Promise<void>
+  private resolveExited!: () => void
   private readonly pending = new Map<string, { resolve: (v: PiRpcResponse) => void; reject: (e: unknown) => void }>()
   private eventHandlers: Array<(ev: PiRpcEvent) => void> = []
   private readonly preludeLines: string[] = []
 
-  private constructor(child: ChildProcessWithoutNullStreams) {
+  private constructor(child: ChildProcessWithoutNullStreams, cleanupLaunchResources: () => void) {
     this.child = child
+    this.cleanupLaunchResources = cleanupLaunchResources
+    this.exited = new Promise(resolve => {
+      this.resolveExited = resolve
+    })
 
     const rl = readline.createInterface({ input: child.stdout })
     rl.on('line', line => {
@@ -115,12 +128,16 @@ export class PiRpcProcess {
     })
 
     child.on('exit', (code, signal) => {
+      this.cleanupLaunchResources()
+      this.resolveExited()
       const err = new Error(`pi process exited (code=${code}, signal=${signal})`)
       for (const [, p] of this.pending) p.reject(err)
       this.pending.clear()
     })
 
     child.on('error', err => {
+      this.cleanupLaunchResources()
+      this.resolveExited()
       for (const [, p] of this.pending) p.reject(err)
       this.pending.clear()
     })
@@ -134,14 +151,16 @@ export class PiRpcProcess {
     // - themes are irrelevant in rpc mode and can be noisy/slow to load.
     // Keep extensions + prompt templates enabled because ACP users may rely on them
     // (e.g. MCP extensions, prompt templates for workflows).
-    const args = ['--mode', 'rpc', '--no-themes']
+    const mcpLaunch = prepareMcpLaunch(params.mcpServers)
+    const args = ['--mode', 'rpc', '--no-themes', ...(mcpLaunch?.args ?? [])]
     if (params.sessionPath) args.push('--session', params.sessionPath)
 
     const child = spawn(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
       env: process.env,
-      shell: shouldUseShellForPiCommand(cmd)
+      shell: shouldUseShellForPiCommand(cmd),
+      signal: params.signal
     })
 
     // Ensure spawn failures (e.g. ENOENT when pi isn't installed) are surfaced as a
@@ -165,7 +184,14 @@ export class PiRpcProcess {
         child.once('error', onError)
       })
     } catch (e: any) {
+      mcpLaunch?.cleanup()
       const code = typeof e?.code === 'string' ? e.code : undefined
+      if (e?.name === 'AbortError' || params.signal?.aborted) {
+        throw new PiRpcSpawnError(`Starting pi was cancelled (command: ${cmd}).`, {
+          code: 'ABORT_ERR',
+          cause: e
+        })
+      }
       if (code === 'ENOENT') {
         throw new PiRpcSpawnError(
           `Could not start pi: executable not found (command: ${cmd}). Pi needs to be installed before it can run in ACP clients. Install it via \`npm install -g @earendil-works/pi-coding-agent\` or ensure \`pi\` is on your PATH. Then try again.`,
@@ -184,7 +210,7 @@ export class PiRpcProcess {
       // leave stderr untouched; ACP clients may capture it.
     })
 
-    const proc = new PiRpcProcess(child)
+    const proc = new PiRpcProcess(child, () => mcpLaunch?.cleanup())
 
     // Best-effort handshake.
     // Important: pi may emit a get_state response pointing at a sessionFile in a directory
@@ -202,6 +228,11 @@ export class PiRpcProcess {
       // ignore for now
     }
 
+    if (params.signal?.aborted) {
+      proc.dispose()
+      throw new PiRpcSpawnError(`Starting pi was cancelled (command: ${cmd}).`, { code: 'ABORT_ERR' })
+    }
+
     return proc
   }
 
@@ -213,12 +244,33 @@ export class PiRpcProcess {
   }
 
   dispose(signal: NodeJS.Signals | number = 'SIGTERM'): void {
-    if (this.child.killed) return
+    if (this.child.killed) {
+      if (this.child.exitCode !== null || this.child.signalCode !== null) this.cleanupLaunchResources()
+      return
+    }
     try {
       this.child.kill(signal as any)
     } catch {
       // ignore
     }
+  }
+
+  async disposeAndWait(graceMs = 2_000, killMs = 1_000): Promise<void> {
+    if (this.child.exitCode !== null || this.child.signalCode !== null) {
+      this.cleanupLaunchResources()
+      return
+    }
+
+    this.dispose('SIGTERM')
+    if (await settlesWithin(this.exited, graceMs)) return
+
+    try {
+      this.child.kill('SIGKILL')
+    } catch {
+      // Best-effort hard shutdown.
+    }
+    await settlesWithin(this.exited, killMs)
+    this.cleanupLaunchResources()
   }
 
   /**
@@ -354,5 +406,20 @@ export class PiRpcProcess {
         reject(error)
       }
     })
+  }
+}
+
+async function settlesWithin(promise: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<boolean>(resolve => {
+        timer = setTimeout(() => resolve(false), timeoutMs)
+        timer.unref?.()
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }

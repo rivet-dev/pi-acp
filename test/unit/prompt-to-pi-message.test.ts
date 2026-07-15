@@ -5,11 +5,18 @@ import { promptToPiMessage } from '../../src/acp/translate/prompt.js'
 test('promptToPiMessage: concatenates text and resource links', () => {
   const { message, images } = promptToPiMessage([
     { type: 'text', text: 'Hello' },
-    { type: 'resource_link', uri: 'file:///tmp/foo.txt', name: 'foo' },
+    {
+      type: 'resource_link',
+      uri: 'file:///tmp/foo.txt',
+      name: 'foo',
+      title: 'Foo file',
+      mimeType: 'text/plain',
+      description: 'example context'
+    },
     { type: 'text', text: ' world' }
   ])
 
-  assert.equal(message, 'Hello\n[Context] file:///tmp/foo.txt world')
+  assert.equal(message, 'Hello\n[Context: Foo file] /tmp/foo.txt (text/plain; example context) world')
   assert.deepEqual(images, [])
 })
 

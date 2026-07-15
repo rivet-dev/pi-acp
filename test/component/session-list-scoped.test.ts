@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { PiAcpAgent } from '../../src/acp/agent.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
 
-test('PiAcpAgent: listSessions defaults to lastSessionCwd when cwd param is omitted', async () => {
+test('PiAcpAgent: listSessions without cwd does not apply an implicit cwd filter', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pi-acp-test-'))
 
   const dirA = join(root, 'sessions', '--a--')
@@ -63,12 +63,10 @@ test('PiAcpAgent: listSessions defaults to lastSessionCwd when cwd param is omit
   try {
     const conn = new FakeAgentSideConnection()
     const agent = new PiAcpAgent(asAgentConn(conn))
-
-    ;(agent as any).lastSessionCwd = '/cwd/a'
+    ;(agent as any).store = { list: () => [] }
 
     const listed = await agent.listSessions({} as any)
-    assert.equal(listed.sessions.length, 1)
-    assert.equal(listed.sessions[0]?.sessionId, 'sess-a')
+    assert.deepEqual(listed.sessions.map(session => session.sessionId).sort(), ['sess-a', 'sess-b'])
   } finally {
     if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR
     else process.env.PI_CODING_AGENT_DIR = oldEnv

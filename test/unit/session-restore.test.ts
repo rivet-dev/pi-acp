@@ -7,6 +7,12 @@ import { PiAcpAgent } from '../../src/acp/agent.js'
 import { PiRpcProcess } from '../../src/pi-rpc/process.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
 
+function withoutSignal(params: any) {
+  assert.ok(params.signal instanceof AbortSignal)
+  const { signal: _signal, ...rest } = params
+  return rest
+}
+
 class FakeSessions {
   restoredSession: any = null
 
@@ -76,7 +82,7 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
     } as any)
 
     assert.equal(result.stopReason, 'end_turn')
-    assert.deepEqual(spawnCalls, [
+    assert.deepEqual(spawnCalls.map(withoutSignal), [
       {
         cwd: '/tmp/store-project',
         sessionPath: '/tmp/store-project/session.jsonl',
@@ -169,7 +175,7 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
       value: 'test/beta'
     } as any)
 
-    assert.deepEqual(spawnCalls, [
+    assert.deepEqual(spawnCalls.map(withoutSignal), [
       {
         cwd: '/tmp/fallback-project',
         sessionPath: sessionFile,

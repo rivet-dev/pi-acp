@@ -1,6 +1,8 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { getPiAcpSessionMapPath } from './paths.js'
+import { readPiSessionHeader } from './pi-sessions.js'
 
 export type StoredSession = {
   sessionId: string
@@ -25,7 +27,22 @@ function loadFile(path: string): SessionMapFile {
     if (parsed?.version !== 1 || typeof parsed.sessions !== 'object' || !parsed.sessions) {
       return { version: 1, sessions: {} }
     }
-    return parsed
+    const sessions: Record<string, StoredSession> = {}
+    for (const [sessionId, entry] of Object.entries(parsed.sessions)) {
+      if (
+        entry &&
+        typeof entry === 'object' &&
+        entry.sessionId === sessionId &&
+        typeof entry.cwd === 'string' &&
+        entry.cwd.length > 0 &&
+        typeof entry.sessionFile === 'string' &&
+        entry.sessionFile.length > 0 &&
+        typeof entry.updatedAt === 'string'
+      ) {
+        sessions[sessionId] = entry
+      }
+    }
+    return { version: 1, sessions }
   } catch {
     return { version: 1, sessions: {} }
   }
@@ -33,7 +50,21 @@ function loadFile(path: string): SessionMapFile {
 
 function saveFile(path: string, data: SessionMapFile): void {
   ensureParentDir(path)
-  writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temporaryPath, JSON.stringify(data, null, 2) + '\n', {
+      encoding: 'utf-8',
+      mode: 0o600
+    })
+    renameSync(temporaryPath, path)
+  } catch (error) {
+    try {
+      rmSync(temporaryPath, { force: true })
+    } catch {
+      // Preserve the original write/rename error.
+    }
+    throw error
+  }
 }
 
 export class SessionStore {
@@ -45,7 +76,22 @@ export class SessionStore {
 
   get(sessionId: string): StoredSession | null {
     const db = loadFile(this.path)
-    return db.sessions[sessionId] ?? null
+    const stored = db.sessions[sessionId]
+    if (!stored) return null
+
+    const header = readPiSessionHeader(stored.sessionFile)
+    if (!header || header.sessionId !== sessionId) return null
+    return header.cwd === stored.cwd ? stored : { ...stored, cwd: header.cwd }
+  }
+
+  list(): StoredSession[] {
+    const db = loadFile(this.path)
+    const sessions: StoredSession[] = []
+    for (const sessionId of Object.keys(db.sessions)) {
+      const stored = this.get(sessionId)
+      if (stored) sessions.push(stored)
+    }
+    return sessions
   }
 
   upsert(entry: { sessionId: string; cwd: string; sessionFile: string }): void {

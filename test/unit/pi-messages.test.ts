@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizePiAssistantText, normalizePiMessageText } from '../../src/acp/translate/pi-messages.js'
+import {
+  normalizePiAssistantText,
+  normalizePiMessageText,
+  piAssistantReplayBlocks
+} from '../../src/acp/translate/pi-messages.js'
 
 test('normalizePiMessageText: supports string', () => {
   assert.equal(normalizePiMessageText('hello'), 'hello')
@@ -25,5 +29,20 @@ test('normalizePiAssistantText: joins only text blocks', () => {
       { type: 'text', text: '!' }
     ]),
     'hi!'
+  )
+})
+
+test('piAssistantReplayBlocks: preserves text, thinking, and tool calls in order', () => {
+  assert.deepEqual(
+    piAssistantReplayBlocks([
+      { type: 'thinking', thinking: 'hmm' },
+      { type: 'text', text: 'hello' },
+      { type: 'toolCall', id: 'call-1', name: 'read', arguments: { path: 'README.md' } }
+    ]),
+    [
+      { type: 'thinking', text: 'hmm' },
+      { type: 'text', text: 'hello' },
+      { type: 'toolCall', id: 'call-1', name: 'read', arguments: { path: 'README.md' } }
+    ]
   )
 })

@@ -1,4 +1,5 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk'
+import { fileURLToPath } from 'node:url'
 
 export type PiImage = {
   type: 'image'
@@ -20,8 +21,19 @@ export function promptToPiMessage(blocks: ContentBlock[]): {
         break
 
       case 'resource_link':
-        // A lightweight, human-readable hint for the LLM.
-        message += `\n[Context] ${b.uri}`
+        {
+          let target = b.uri
+          if (b.uri.startsWith('file:')) {
+            try {
+              target = fileURLToPath(b.uri)
+            } catch {
+              // Keep the original URI when it is not a valid file URL.
+            }
+          }
+          const label = b.title ?? b.name
+          const details = [b.mimeType, b.description].filter(Boolean).join('; ')
+          message += `\n[Context: ${label}] ${target}${details ? ` (${details})` : ''}`
+        }
         break
 
       case 'image': {
