@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { childVisiblePath } from './child-path.js'
 
 export type PermissionGateLaunch = {
   args: string[]
@@ -38,7 +39,7 @@ export function preparePermissionGateLaunch(env = process.env): PermissionGateLa
 
   let cleaned = false
   return {
-    args: ['--extension', extensionPath],
+    args: ['--extension', childVisiblePath(extensionPath, env)],
     cleanup() {
       if (cleaned) return
       cleaned = true

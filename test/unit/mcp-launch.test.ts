@@ -6,6 +6,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { prepareMcpLaunch } from '../../src/acp/mcp.js'
+import { childVisiblePath } from '../../src/acp/child-path.js'
+
+test('childVisiblePath maps guest files into the AgentOS shadow root', () => {
+  assert.equal(
+    childVisiblePath('/tmp/pi-acp/config.json', { AGENTOS_SANDBOX_ROOT: '/host/shadow' }),
+    '/host/shadow/tmp/pi-acp/config.json'
+  )
+  assert.equal(childVisiblePath('/tmp/pi-acp/config.json', {}), '/tmp/pi-acp/config.json')
+})
 
 test('prepareMcpLaunch writes ACP stdio servers for the Pi MCP extension', () => {
   const launch = prepareMcpLaunch([

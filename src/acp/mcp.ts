@@ -3,6 +3,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
+import { childVisiblePath } from './child-path.js'
 
 export type McpLaunch = {
   args: string[]
@@ -55,7 +56,7 @@ export function prepareMcpLaunch(servers: McpServer[] | undefined): McpLaunch | 
 
   let cleaned = false
   return {
-    args: ['--extension', extensionPath, '--mcp-config', configPath],
+    args: ['--extension', childVisiblePath(extensionPath), '--mcp-config', childVisiblePath(configPath)],
     cleanup() {
       if (cleaned) return
       cleaned = true

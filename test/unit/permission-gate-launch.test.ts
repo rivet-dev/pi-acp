@@ -23,3 +23,13 @@ test('preparePermissionGateLaunch materializes and cleans up the extension', () 
   assert.equal(existsSync(extensionPath), false)
   launch.cleanup()
 })
+
+test('preparePermissionGateLaunch maps its guest path for an AgentOS child', () => {
+  const launch = preparePermissionGateLaunch({
+    PI_ACP_PERMISSION_GATE: '1',
+    AGENTOS_SANDBOX_ROOT: '/host/shadow'
+  })
+  assert.ok(launch)
+  assert.match(launch.args[1]!, /^\/host\/shadow\/tmp\/pi-acp-permissions-/)
+  launch.cleanup()
+})
