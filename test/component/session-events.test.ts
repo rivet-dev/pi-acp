@@ -805,6 +805,42 @@ test('PiAcpSession: cancel flips stopReason to cancelled', async () => {
   assert.equal(reason, 'cancelled')
 })
 
+test('PiAcpSession: cancel waits for prompt preflight before aborting', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  let acceptPrompt!: () => void
+  const promptAccepted = new Promise<void>(resolve => {
+    acceptPrompt = resolve
+  })
+  proc.prompt = async (message: string, attachments: unknown[] = []) => {
+    proc.prompts.push({ message, attachments })
+    await promptAccepted
+  }
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const prompt = session.prompt('hello')
+  const cancellation = session.cancel()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(proc.abortCount, 0)
+
+  acceptPrompt()
+  await cancellation
+  assert.equal(proc.abortCount, 1)
+
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
+  assert.equal(await prompt, 'cancelled')
+})
+
 test('PiAcpSession: queues concurrent prompt and starts it after agent_end', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

@@ -262,6 +262,12 @@ export class PiAcpSession {
 
   // Current in-flight turn (if any). Additional prompts are queued.
   private pendingTurn: PendingTurn | null = null
+  // Pi's RPC server processes input lines concurrently. A prompt command can
+  // still be in asynchronous preflight when a later abort command arrives. In
+  // that window Pi reports itself idle, acknowledges the abort, and then starts
+  // the prompt. Keep the prompt-acceptance request so cancellation can preserve
+  // wire ordering through preflight.
+  private pendingPromptAcceptance: Promise<void> | null = null
   private pendingTurnError: string | null = null
   private readonly turnQueue: QueuedTurn[] = []
   private closed = false
@@ -385,7 +391,14 @@ export class PiAcpSession {
       })
     }
 
-    // Abort the currently running turn (if any). If nothing is running, this is a no-op.
+    // Pi's RPC command handler runs input lines concurrently. Wait until the
+    // preceding prompt has passed preflight before sending abort; otherwise the
+    // abort can observe an idle session and return before that prompt starts.
+    const promptAcceptance = this.pendingPromptAcceptance
+    if (promptAcceptance) await promptAcceptance.catch(() => {})
+
+    // Abort the currently running turn (if any). Pi's abort response itself
+    // waits for the agent session to become idle.
     await this.proc.abort()
   }
 
@@ -507,7 +520,18 @@ export class PiAcpSession {
     // Kick off pi, but completion is determined by pi events, not the RPC response.
     // Important: pi may emit multiple `turn_end` events (e.g. when the model requests tools).
     // The full prompt is finished when we see Pi's terminal agent event.
-    this.proc.prompt(t.message, t.images).catch(err => {
+    const promptAcceptance = this.proc.prompt(t.message, t.images)
+    this.pendingPromptAcceptance = promptAcceptance
+    void promptAcceptance.then(
+      () => {
+        if (this.pendingPromptAcceptance === promptAcceptance) this.pendingPromptAcceptance = null
+      },
+      () => {
+        if (this.pendingPromptAcceptance === promptAcceptance) this.pendingPromptAcceptance = null
+      }
+    )
+
+    promptAcceptance.catch(err => {
       // If the subprocess errors before we get a terminal agent event, treat as error unless cancelled.
       // Also ensure we flush any already-enqueued updates first.
       void this.flushEmits().finally(() => {
