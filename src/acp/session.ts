@@ -868,6 +868,11 @@ export class PiAcpSession {
         // the pending turn and must not complete it.
         if (type === 'agent_settled' && !this.inAgentLoop) break
 
+        // After an abort, `agent_end` only means the active agent loop ended. Pi
+        // emits `agent_settled` once abort cleanup is complete and the RPC process
+        // can safely accept another prompt.
+        if (type === 'agent_end' && this.cancelRequested) break
+
         // Ensure all updates derived from pi events are delivered before we resolve
         // the ACP `session/prompt` request.
         void this.flushEmits().finally(() => {
