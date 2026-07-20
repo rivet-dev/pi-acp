@@ -166,15 +166,21 @@ export class PiRpcProcess {
       mcpLaunch?.cleanup()
       permissionGateLaunch?.cleanup()
     }
-    const args = [
-      ...(params.piEntrypoint ? [params.piEntrypoint] : []),
+    const piArgs = [
       '--mode',
       'rpc',
       '--no-themes',
       ...(mcpLaunch?.args ?? []),
       ...(permissionGateLaunch?.args ?? [])
     ]
-    if (params.sessionPath) args.push('--session', params.sessionPath)
+    if (params.sessionPath) piArgs.push('--session', params.sessionPath)
+    const args = params.piEntrypoint
+      ? [
+          '-e',
+          `process.chdir(${JSON.stringify(params.cwd)}); process.argv.splice(1, 0, ${JSON.stringify(params.piEntrypoint)}); globalThis.__piAcpMain = import(${JSON.stringify(params.piEntrypoint)}).catch(error => { console.error(error); process.exitCode = 1; });`,
+          ...piArgs
+        ]
+      : piArgs
 
     const child = spawn(cmd, args, {
       cwd: params.cwd,
