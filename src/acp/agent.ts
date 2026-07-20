@@ -232,6 +232,9 @@ export class PiAcpAgent implements ACPAgent {
           sessionPath: stored.sessionFile,
           ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
           piCommand: process.env.PI_ACP_PI_COMMAND,
+          ...(process.env.PI_ACP_PI_ENTRYPOINT
+            ? { piEntrypoint: process.env.PI_ACP_PI_ENTRYPOINT }
+            : {}),
           signal: controller.signal
         })
       } catch (e: any) {

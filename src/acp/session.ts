@@ -180,7 +180,10 @@ export class SessionManager {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
         mcpServers: params.mcpServers,
-        piCommand: params.piCommand
+        piCommand: params.piCommand,
+        ...(process.env.PI_ACP_PI_ENTRYPOINT
+          ? { piEntrypoint: process.env.PI_ACP_PI_ENTRYPOINT }
+          : {})
       })
     } catch (e) {
       if (e instanceof PiRpcSpawnError) {

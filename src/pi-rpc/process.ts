@@ -75,6 +75,8 @@ type SpawnParams = {
   cwd: string
   /** Optional override for `pi` executable name/path */
   piCommand?: string
+  /** Optional JavaScript CLI entrypoint launched through the current Node runtime. */
+  piEntrypoint?: string
   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
   /** ACP-provided MCP servers to expose through Pi's extension system. */
@@ -151,7 +153,8 @@ export class PiRpcProcess {
 
   static async spawn(params: SpawnParams): Promise<PiRpcProcess> {
     // On Windows, npm commonly creates pi.cmd / pi.bat launcher scripts.
-    const cmd = getPiCommand(params.piCommand)
+    const configuredCommand = getPiCommand(params.piCommand)
+    const cmd = params.piEntrypoint ? process.execPath : configuredCommand
 
     // Speed/robustness for ACP:
     // - themes are irrelevant in rpc mode and can be noisy/slow to load.
@@ -163,7 +166,14 @@ export class PiRpcProcess {
       mcpLaunch?.cleanup()
       permissionGateLaunch?.cleanup()
     }
-    const args = ['--mode', 'rpc', '--no-themes', ...(mcpLaunch?.args ?? []), ...(permissionGateLaunch?.args ?? [])]
+    const args = [
+      ...(params.piEntrypoint ? [params.piEntrypoint] : []),
+      '--mode',
+      'rpc',
+      '--no-themes',
+      ...(mcpLaunch?.args ?? []),
+      ...(permissionGateLaunch?.args ?? [])
+    ]
     if (params.sessionPath) args.push('--session', params.sessionPath)
 
     const child = spawn(cmd, args, {
@@ -205,7 +215,7 @@ export class PiRpcProcess {
       }
       if (code === 'ENOENT') {
         throw new PiRpcSpawnError(
-          `Could not start pi: executable not found (command: ${cmd}). Pi needs to be installed before it can run in ACP clients. Install it via \`npm install -g @earendil-works/pi-coding-agent\` or ensure \`pi\` is on your PATH. Then try again.`,
+          `Could not start pi: executable not found (command: ${cmd}${params.piEntrypoint ? ` ${params.piEntrypoint}` : ''}). Pi needs to be installed before it can run in ACP clients. Install it via \`npm install -g @earendil-works/pi-coding-agent\` or ensure \`pi\` is on your PATH. Then try again.`,
           { code, cause: e }
         )
       }
